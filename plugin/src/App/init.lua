@@ -16,6 +16,7 @@ local strict = require(Plugin.strict)
 local Dictionary = require(Plugin.Dictionary)
 local ServeSession = require(Plugin.ServeSession)
 local ApiContext = require(Plugin.ApiContext)
+local HeadlessAPI = require(Plugin.HeadlessAPI)
 local preloadAssets = require(Plugin.preloadAssets)
 local soundPlayer = require(Plugin.soundPlayer)
 local Theme = require(script.Theme)
@@ -49,6 +50,11 @@ function App:init()
 	self.host, self.setHost = Roact.createBinding(priorHost or "")
 	self.port, self.setPort = Roact.createBinding(priorPort or "")
 
+	self.headlessAPI, self.readOnlyHeadlessAPI = HeadlessAPI.new(self, Config, Settings)
+
+	-- selene: allow(global_usage)
+	_G.Rojo = self.readOnlyHeadlessAPI -- Expose headless to other plugins and command bar
+
 	self.patchInfo, self.setPatchInfo = Roact.createBinding({
 		changes = 0,
 		timestamp = os.time(),
@@ -72,6 +78,25 @@ function App:addNotification(text: string, timeout: number?)
 		text = text,
 		timestamp = DateTime.now().UnixTimestampMillis,
 		timeout = timeout or 3,
+	})
+
+	self:setState({
+		notifications = notifications,
+	})
+end
+
+function App:addThirdPartyNotification(source: string, text: string, timeout: number?)
+	if not Settings:get("showNotifications") then
+		return
+	end
+
+	local notifications = table.clone(self.state.notifications)
+	table.insert(notifications, {
+		text = text,
+		timestamp = DateTime.now().UnixTimestampMillis,
+		timeout = timeout or 3,
+		thirdParty = true,
+		source = source,
 	})
 
 	self:setState({
@@ -127,7 +152,7 @@ function App:setPriorEndpoint(host: string, port: string)
 	Settings:set("priorEndpoints", priorEndpoints)
 end
 
-function App:getHostAndPort()
+function App:getHostAndPort(): (string, string)
 	local host = self.host:getValue()
 	local port = self.port:getValue()
 
@@ -180,7 +205,7 @@ function App:releaseSyncLock()
 	Log.trace("Could not relase sync lock because it is owned by {}", lock.Value)
 end
 
-function App:startSession()
+function App:startSession(host: string?, port: string?)
 	local claimedLock, priorOwner = self:claimSyncLock()
 	if not claimedLock then
 		local msg = string.format("Could not sync because user '%s' is already syncing", tostring(priorOwner))
@@ -196,14 +221,16 @@ function App:startSession()
 		return
 	end
 
-	local host, port = self:getHostAndPort()
+	if host == nil or port == nil then
+		host, port = self:getHostAndPort()
+	end
 
 	local sessionOptions = {
 		openScriptsExternally = Settings:get("openScriptsExternally"),
 		twoWaySync = Settings:get("twoWaySync"),
 	}
 
-	local baseUrl = ("http://%s:%s"):format(host, port)
+	local baseUrl = string.format("http://%s:%s", host :: string, port :: string)
 	local apiContext = ApiContext.new(baseUrl)
 
 	local serveSession = ServeSession.new({
@@ -241,6 +268,12 @@ function App:startSession()
 	end)
 
 	serveSession:onStatusChanged(function(status, details)
+		self.headlessAPI.Connected = status == ServeSession.Status.Connected
+		if not self.headlessAPI.Connected then
+			self.headlessAPI.Address = nil
+			self.headlessAPI.ProjectName = nil
+		end
+
 		if status == ServeSession.Status.Connecting then
 			self:setPriorEndpoint(host, port)
 
@@ -250,7 +283,11 @@ function App:startSession()
 			})
 			self:addNotification("Connecting to session...")
 		elseif status == ServeSession.Status.Connected then
-			local address = ("%s:%s"):format(host, port)
+			local address = string.format("%s:%s", host :: string, port :: string)
+
+			self.headlessAPI.Address = address
+			self.headlessAPI.ProjectName = details
+
 			self:setState({
 				appStatus = AppStatus.Connected,
 				projectName = details,

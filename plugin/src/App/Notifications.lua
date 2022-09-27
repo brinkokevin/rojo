@@ -87,13 +87,25 @@ end
 
 function Notification:render()
 	local time = DateTime.fromUnixTimestampMillis(self.props.timestamp)
+	local infoText =
+		time:FormatLocalTime("LTS", "en-us") ..
+		(if self.props.source then " • From: " .. self.props.source else "")
 
 	local textBounds = TextService:GetTextSize(
 		self.props.text,
 		15,
-		Enum.Font.GothamSemibold,
+		Enum.Font.GothamMedium,
 		Vector2.new(350, 700)
 	)
+
+	local infoTextBounds = TextService:GetTextSize(
+		infoText,
+		12,
+		Enum.Font.Gotham,
+		Vector2.new(350, 14)
+	)
+
+	local textWidth = math.max(infoTextBounds.X, textBounds.X)
 
 	local transparency = self.binding:map(function(value)
 		return 1 - value
@@ -101,8 +113,8 @@ function Notification:render()
 
 	local size = self.binding:map(function(value)
 		return UDim2.fromOffset(
-			(35+40+textBounds.X)*value,
-			math.max(14+20+textBounds.Y, 32+20)
+			(35+40+textWidth)*value,
+			math.max(16+20+textBounds.Y, 54)
 		)
 	end)
 
@@ -123,21 +135,21 @@ function Notification:render()
 				size = UDim2.new(1, 0, 1, 0),
 			}, {
 				TextContainer = e("Frame", {
-					Size = UDim2.new(0, 35+textBounds.X, 1, -20),
+					Size = UDim2.new(1, 0, 1, -20),
 					Position = UDim2.new(0, 0, 0, 10),
 					BackgroundTransparency = 1
 				}, {
 					Logo = e("ImageLabel", {
 						ImageTransparency = transparency,
-						Image = Assets.Images.PluginButton,
+						Image = if self.props.thirdParty then Assets.Images.ThirdPartyPlugin else Assets.Images.PluginButton,
 						BackgroundTransparency = 1,
 						Size = UDim2.new(0, 32, 0, 32),
 						Position = UDim2.new(0, 0, 0.5, 0),
 						AnchorPoint = Vector2.new(0, 0.5),
 					}),
-					Info = e("TextLabel", {
+					Message = e("TextLabel", {
 						Text = self.props.text,
-						Font = Enum.Font.GothamSemibold,
+						Font = Enum.Font.GothamMedium,
 						TextSize = 15,
 						TextColor3 = theme.Notification.InfoColor,
 						TextTransparency = transparency,
@@ -145,21 +157,21 @@ function Notification:render()
 						TextWrapped = true,
 
 						Size = UDim2.new(0, textBounds.X, 0, textBounds.Y),
-						Position = UDim2.fromOffset(35, 0),
+						Position = UDim2.fromOffset(38, 0),
 
 						LayoutOrder = 1,
 						BackgroundTransparency = 1,
 					}),
-					Time = e("TextLabel", {
-						Text = time:FormatLocalTime("LTS", "en-us"),
-						Font = Enum.Font.Code,
+					Info = e("TextLabel", {
+						Text = infoText,
+						Font = Enum.Font.Gotham,
 						TextSize = 12,
 						TextColor3 = theme.Notification.InfoColor,
 						TextTransparency = transparency,
 						TextXAlignment = Enum.TextXAlignment.Left,
 
-						Size = UDim2.new(1, -35, 0, 14),
-						Position = UDim2.new(0, 35, 1, -14),
+						Size = UDim2.new(1, -38, 0, 14),
+						Position = UDim2.new(0, 38, 1, -14),
 
 						LayoutOrder = 1,
 						BackgroundTransparency = 1,
@@ -167,8 +179,8 @@ function Notification:render()
 				}),
 
 				Padding = e("UIPadding", {
-					PaddingLeft = UDim.new(0, 17),
-					PaddingRight = UDim.new(0, 15),
+					PaddingLeft = UDim.new(0, 12),
+					PaddingRight = UDim.new(0, 12),
 				}),
 			})
 		})
@@ -181,16 +193,18 @@ function Notifications:render()
 	local notifs = {}
 
 	for index, notif in ipairs(self.props.notifications) do
-		notifs[notif] = e(Notification, {
+		local props = {
 			soundPlayer = self.props.soundPlayer,
-			text = notif.text,
-			timestamp = notif.timestamp,
-			timeout = notif.timeout,
 			layoutOrder = (notif.timestamp - baseClock),
 			onClose = function()
 				self.props.onClose(index)
 			end,
-		})
+		}
+		for key, value in notif do
+			props[key] = value
+		end
+
+		notifs[notif] = e(Notification, props)
 	end
 
 	return Roact.createFragment(notifs)
