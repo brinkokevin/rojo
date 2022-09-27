@@ -523,7 +523,7 @@ function App:render()
 				name = pluginName,
 			}, {
 				button = e(StudioToggleButton, {
-					name = "Rojo",
+					name = "Rojo Boatly",
 					tooltip = "Show or hide the Rojo panel",
 					icon = self.state.toolbarIcon,
 					active = self.state.guiEnabled,
