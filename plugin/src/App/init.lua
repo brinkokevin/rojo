@@ -352,7 +352,7 @@ function App:endSession()
 end
 
 function App:render()
-	local pluginName = "Rojo " .. Version.display(Config.version)
+	local pluginName = "Rojo Boatly " .. Version.display(Config.version)
 
 	local function createPageElement(appStatus, additionalProps)
 		additionalProps = additionalProps or {}
