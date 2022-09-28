@@ -50,7 +50,7 @@ function App:init()
 	self.host, self.setHost = Roact.createBinding(priorHost or "")
 	self.port, self.setPort = Roact.createBinding(priorPort or "")
 
-	self.headlessAPI, self.readOnlyHeadlessAPI = HeadlessAPI.new(self, Config, Settings)
+	self.headlessAPI, self.readOnlyHeadlessAPI = HeadlessAPI.new(self)
 
 	-- selene: allow(global_usage)
 	_G.Rojo = self.readOnlyHeadlessAPI -- Expose headless to other plugins and command bar
@@ -268,10 +268,10 @@ function App:startSession(host: string?, port: string?)
 	end)
 
 	serveSession:onStatusChanged(function(status, details)
-		self.headlessAPI.Connected = status == ServeSession.Status.Connected
+		self.headlessAPI:_updateProperty("Connected", status == ServeSession.Status.Connected)
 		if not self.headlessAPI.Connected then
-			self.headlessAPI.Address = nil
-			self.headlessAPI.ProjectName = nil
+			self.headlessAPI:_updateProperty("Address", nil)
+			self.headlessAPI:_updateProperty("ProjectName", nil)
 		end
 
 		if status == ServeSession.Status.Connecting then
@@ -285,8 +285,8 @@ function App:startSession(host: string?, port: string?)
 		elseif status == ServeSession.Status.Connected then
 			local address = string.format("%s:%s", host :: string, port :: string)
 
-			self.headlessAPI.Address = address
-			self.headlessAPI.ProjectName = details
+			self.headlessAPI:_updateProperty("Address", address)
+			self.headlessAPI:_updateProperty("ProjectName", details)
 
 			self:setState({
 				appStatus = AppStatus.Connected,
