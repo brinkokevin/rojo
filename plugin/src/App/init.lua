@@ -24,6 +24,7 @@ local Theme = require(script.Theme)
 local Page = require(script.Page)
 local Notifications = require(script.Notifications)
 local Tooltip = require(script.Components.Tooltip)
+local PermissionPopup = require(script.PermissionPopup)
 local StudioPluginAction = require(script.Components.Studio.StudioPluginAction)
 local StudioToolbar = require(script.Components.Studio.StudioToolbar)
 local StudioToggleButton = require(script.Components.Studio.StudioToggleButton)
@@ -65,6 +66,7 @@ function App:init()
 		guiEnabled = false,
 		notifications = {},
 		toolbarIcon = Assets.Images.PluginButton,
+		popups = {},
 	})
 end
 
@@ -205,6 +207,39 @@ function App:releaseSyncLock()
 	Log.trace("Could not relase sync lock because it is owned by {}", lock.Value)
 end
 
+function App:requestPermission(source: string, name: string, apis: {string}, initialState: {[string]: boolean?}): {[string]: boolean}
+	local responseEvent = Instance.new("BindableEvent")
+
+	self:setState(function(state)
+		state.popups[source] = {
+			responseEvent = responseEvent,
+			initialState = initialState,
+			name = name,
+			apis = apis,
+			content = e(PermissionPopup, {
+				responseEvent = responseEvent,
+				initialState = initialState,
+				source = source,
+				name = name,
+				apis = apis,
+				apiDescriptions = self.headlessAPI._apiDescriptions,
+				transparency = Roact.createBinding(0),
+			}),
+		}
+		return state
+	end)
+
+	local response = responseEvent.Event:Wait()
+	responseEvent:Destroy()
+
+	self:setState(function(state)
+		state.popups[source] = nil
+		return state
+	end)
+
+	return response
+end
+
 function App:startSession(host: string?, port: string?)
 	local claimedLock, priorOwner = self:claimSyncLock()
 	if not claimedLock then
@@ -268,10 +303,10 @@ function App:startSession(host: string?, port: string?)
 	end)
 
 	serveSession:onStatusChanged(function(status, details)
-		self.headlessAPI.Connected = status == ServeSession.Status.Connected
+		self.headlessAPI:_updateProperty("Connected", status == ServeSession.Status.Connected)
 		if not self.headlessAPI.Connected then
-			self.headlessAPI.Address = nil
-			self.headlessAPI.ProjectName = nil
+			self.headlessAPI:_updateProperty("Address", nil)
+			self.headlessAPI:_updateProperty("ProjectName", nil)
 		end
 
 		if status == ServeSession.Status.Connecting then
@@ -285,8 +320,8 @@ function App:startSession(host: string?, port: string?)
 		elseif status == ServeSession.Status.Connected then
 			local address = string.format("%s:%s", host :: string, port :: string)
 
-			self.headlessAPI.Address = address
-			self.headlessAPI.ProjectName = details
+			self.headlessAPI:_updateProperty("Address", address)
+			self.headlessAPI:_updateProperty("ProjectName", details)
 
 			self:setState({
 				appStatus = AppStatus.Connected,
@@ -365,11 +400,51 @@ function App:render()
 		return e(Page, props)
 	end
 
+	local popups = {}
+	for id, popup in self.state.popups do
+		popups["Rojo_"..id] = e(StudioPluginGui, {
+			id = id,
+			title = popup.name .. " Popup",
+			active = true,
+
+			initDockState = Enum.InitialDockState.Top,
+			initEnabled = true,
+			overridePreviousState = true,
+			floatingSize = Vector2.new(400, 300),
+			minimumSize = Vector2.new(390, 240),
+
+			zIndexBehavior = Enum.ZIndexBehavior.Sibling,
+
+			onClose = function()
+				popup.responseEvent:Fire(popup.initialState)
+				popup.responseEvent:Destroy()
+
+				self:setState(function(state)
+					state[id] = nil
+					return state
+				end)
+			end,
+		}, {
+			Content = popup.content,
+
+			Background = Theme.with(function(theme)
+				return e("Frame", {
+					Size = UDim2.new(1, 0, 1, 0),
+					BackgroundColor3 = theme.BackgroundColor,
+					ZIndex = 0,
+					BorderSizePixel = 0,
+				})
+			end),
+		})
+	end
+
 	return e(StudioPluginContext.Provider, {
 		value = self.props.plugin,
 	}, {
 		e(Theme.StudioProvider, nil, {
 			e(Tooltip.Provider, nil, {
+				popups = Roact.createFragment(popups),
+
 				gui = e(StudioPluginGui, {
 					id = pluginName,
 					title = pluginName,
