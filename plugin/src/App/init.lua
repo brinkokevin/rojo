@@ -303,12 +303,6 @@ function App:startSession(host: string?, port: string?)
 	end)
 
 	serveSession:onStatusChanged(function(status, details)
-		self.headlessAPI:_updateProperty("Connected", status == ServeSession.Status.Connected)
-		if not self.headlessAPI.Connected then
-			self.headlessAPI:_updateProperty("Address", nil)
-			self.headlessAPI:_updateProperty("ProjectName", nil)
-		end
-
 		if status == ServeSession.Status.Connecting then
 			self:setPriorEndpoint(host, port)
 
@@ -352,6 +346,12 @@ function App:startSession(host: string?, port: string?)
 				})
 				self:addNotification("Disconnected from session.")
 			end
+		end
+
+		self.headlessAPI:_updateProperty("Connected", status == ServeSession.Status.Connected)
+		if not self.headlessAPI.Connected then
+			self.headlessAPI:_updateProperty("Address", nil)
+			self.headlessAPI:_updateProperty("ProjectName", nil)
 		end
 	end)
 
