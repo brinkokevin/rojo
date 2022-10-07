@@ -22,24 +22,24 @@ local TooltipContext = Roact.createContext({})
 
 local function Popup(props)
 	local textSize = TextService:GetTextSize(
-		props.Text, 16, Enum.Font.GothamMedium, Vector2.new(math.min(props.canvasSize.X, 160), math.huge)
+		props.Text, 16, Enum.Font.GothamMedium, Vector2.new(math.min(props.parentSize.X, 160), math.huge)
 	) + TEXT_PADDING
 
 	local trigger = props.Trigger:getValue()
 
-	local spaceBelow = props.canvasSize.Y - (trigger.AbsolutePosition.Y + trigger.AbsoluteSize.Y - Y_OVERLAP + TAIL_SIZE)
+	local spaceBelow = props.parentSize.Y - (trigger.AbsolutePosition.Y + trigger.AbsoluteSize.Y - Y_OVERLAP + TAIL_SIZE)
 	local spaceAbove = trigger.AbsolutePosition.Y + Y_OVERLAP - TAIL_SIZE
 
 	-- If there's not enough space below, and there's more space above, then show the tooltip above the trigger
 	local displayAbove = spaceBelow < textSize.Y and spaceAbove > spaceBelow
 
-	local X = math.clamp(props.Position.X - X_OFFSET, 0, props.canvasSize.X - textSize.X)
+	local X = math.clamp(props.Position.X - X_OFFSET, 0, props.parentSize.X - textSize.X)
 	local Y = 0
 
 	if displayAbove then
 		Y = math.max(trigger.AbsolutePosition.Y - TAIL_SIZE - textSize.Y + Y_OVERLAP, 0)
 	else
-		Y = math.min(trigger.AbsolutePosition.Y + trigger.AbsoluteSize.Y + TAIL_SIZE - Y_OVERLAP, props.canvasSize.Y - textSize.Y)
+		Y = math.min(trigger.AbsolutePosition.Y + trigger.AbsoluteSize.Y + TAIL_SIZE - Y_OVERLAP, props.parentSize.Y - textSize.Y)
 	end
 
 	return Theme.with(function(theme)
@@ -117,21 +117,21 @@ end
 
 function Provider:render()
 	return Roact.createElement(TooltipContext.Provider, {
-        value = self.state,
-    }, self.props[Roact.Children])
+		value = self.state,
+	}, self.props[Roact.Children])
 end
 
-local Canvas = Roact.Component:extend("TooltipCanvas")
+local Container = Roact.Component:extend("TooltipContainer")
 
-function Canvas:init()
+function Container:init()
 	self:setState({
-		canvasSize = Vector2.new(200, 100),
+		size = Vector2.new(200, 100),
 	})
 end
 
-function Canvas:render()
+function Container:render()
 	return Roact.createElement(TooltipContext.Consumer, {
-        render = function(context)
+		render = function(context)
 			local tips = context.tips
 			local popups = {}
 
@@ -141,14 +141,14 @@ function Canvas:render()
 					Position = value.Position or Vector2.zero,
 					Trigger = value.Trigger,
 
-					canvasSize = self.state.canvasSize,
+					parentSize = self.state.size,
 				})
 			end
 
 			return e("Frame", {
 				[Roact.Change.AbsoluteSize] = function(rbx)
 					self:setState({
-						canvasSize = rbx.AbsoluteSize,
+						size = rbx.AbsoluteSize,
 					})
 				end,
 				ZIndex = 100,
@@ -166,7 +166,9 @@ function Trigger:init()
 	self.ref = Roact.createRef()
 	self.mousePos = Vector2.zero
 
-	self.destroy = nil
+	self.destroy = function()
+		self.props.context.removeTip(self.id)
+	end
 end
 
 function Trigger:willUnmount()
@@ -179,43 +181,46 @@ function Trigger:willUnmount()
 end
 
 function Trigger:render()
-	return Roact.createElement(TooltipContext.Consumer, {
-        render = function(context)
-			self.destroy = function()
-				context.removeTip(self.id)
+	return e("Frame", {
+		Size = UDim2.fromScale(1, 1),
+		BackgroundTransparency = 1,
+		ZIndex = self.props.zIndex or 100,
+		[Roact.Ref] = self.ref,
+
+		[Roact.Event.MouseMoved] = function(_rbx, x, y)
+			self.mousePos = Vector2.new(x, y)
+		end,
+		[Roact.Event.MouseEnter] = function()
+			self.showDelayThread = task.delay(DELAY, function()
+				self.props.context.addTip(self.id, {
+					Text = self.props.text,
+					Position = self.mousePos,
+					Trigger = self.ref,
+				})
+			end)
+		end,
+		[Roact.Event.MouseLeave] = function()
+			if self.showDelayThread then
+				task.cancel(self.showDelayThread)
 			end
+			self.props.context.removeTip(self.id)
+		end,
+	})
+end
 
-			return e("Frame", {
-				Size = UDim2.fromScale(1, 1),
-				BackgroundTransparency = 1,
-				ZIndex = self.props.zIndex or 100,
-				[Roact.Ref] = self.ref,
+local function TriggerConsumer(props)
+	return Roact.createElement(TooltipContext.Consumer, {
+		render = function(context)
+			local innerProps = table.clone(props)
+			innerProps.context = context
 
-				[Roact.Event.MouseMoved] = function(_rbx, x, y)
-					self.mousePos = Vector2.new(x, y)
-				end,
-				[Roact.Event.MouseEnter] = function()
-					self.showDelayThread = task.delay(DELAY, function()
-						context.addTip(self.id, {
-							Text = self.props.text,
-							Position = self.mousePos,
-							Trigger = self.ref,
-						})
-					end)
-				end,
-				[Roact.Event.MouseLeave] = function()
-					if self.showDelayThread then
-						task.cancel(self.showDelayThread)
-					end
-					context.removeTip(self.id)
-				end,
-			})
+			return e(Trigger, innerProps)
 		end,
 	})
 end
 
 return {
 	Provider = Provider,
-	Canvas = Canvas,
-	Trigger = Trigger,
+	Container = Container,
+	Trigger = TriggerConsumer,
 }

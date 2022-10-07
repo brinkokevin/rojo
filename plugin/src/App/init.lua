@@ -472,7 +472,7 @@ function App:render()
 						})
 					end,
 				}, {
-					Tooltips = e(Tooltip.Canvas, nil),
+					Tooltips = e(Tooltip.Container, nil),
 
 					NotConnectedPage = createPageElement(AppStatus.NotConnected, {
 						host = self.host,
