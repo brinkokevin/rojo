@@ -521,15 +521,6 @@ function App:render()
 							})
 						end,
 					}),
-
-					Background = Theme.with(function(theme)
-						return e("Frame", {
-							Size = UDim2.new(1, 0, 1, 0),
-							BackgroundColor3 = theme.BackgroundColor,
-							ZIndex = 0,
-							BorderSizePixel = 0,
-						})
-					end),
 				}),
 
 				RojoNotifications = e("ScreenGui", {}, {
