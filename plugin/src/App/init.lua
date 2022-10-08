@@ -17,6 +17,7 @@ local Dictionary = require(Plugin.Dictionary)
 local ServeSession = require(Plugin.ServeSession)
 local ApiContext = require(Plugin.ApiContext)
 local HeadlessAPI = require(Plugin.HeadlessAPI)
+local PatchSet = require(Plugin.PatchSet)
 local preloadAssets = require(Plugin.preloadAssets)
 local soundPlayer = require(Plugin.soundPlayer)
 local Theme = require(script.Theme)
@@ -36,6 +37,7 @@ local AppStatus = strict("AppStatus", {
 	NotConnected = "NotConnected",
 	Settings = "Settings",
 	Connecting = "Connecting",
+	Confirming = "Confirming",
 	Connected = "Connected",
 	Error = "Error",
 })
@@ -60,10 +62,13 @@ function App:init()
 		changes = 0,
 		timestamp = os.time(),
 	})
+	self.confirmationBindable = Instance.new("BindableEvent")
+	self.confirmationEvent = self.confirmationBindable.Event
 
 	self:setState({
 		appStatus = AppStatus.NotConnected,
 		guiEnabled = false,
+		confirmData = {},
 		notifications = {},
 		toolbarIcon = Assets.Images.PluginButton,
 		permissionPopups = {},
@@ -291,7 +296,9 @@ function App:startSession(host: string?, port: string?)
 			end
 		end
 
-		if changes == 0 then return end
+		if changes == 0 then
+			return
+		end
 
 		local old = self.patchInfo:getValue()
 		if now - old.timestamp < 2 then
@@ -357,6 +364,32 @@ function App:startSession(host: string?, port: string?)
 		end
 	end)
 
+	serveSession:setConfirmCallback(function(instanceMap, patch, serverInfo)
+		if PatchSet.isEmpty(patch) then
+			return "Accept"
+		end
+
+		self:setState({
+			appStatus = AppStatus.Confirming,
+			confirmData = {
+				instanceMap = instanceMap,
+				patch = patch,
+				serverInfo = serverInfo,
+			},
+			toolbarIcon = Assets.Images.PluginButton,
+		})
+
+		self:addNotification(
+			string.format(
+				"Please accept%sor abort the initializing sync session.",
+				Settings:get("twoWaySync") and ", reject, " or " "
+			),
+			7
+		)
+
+		return self.confirmationEvent:Wait()
+	end)
+
 	serveSession:start()
 
 	self.serveSession = serveSession
@@ -367,7 +400,7 @@ function App:startSession(host: string?, port: string?)
 			local patchInfo = table.clone(self.patchInfo:getValue())
 			self.setPatchInfo(patchInfo)
 			local elapsed = os.time() - patchInfo.timestamp
-			task.wait(elapsed < 60 and 1 or elapsed/5)
+			task.wait(elapsed < 60 and 1 or elapsed / 5)
 		end
 	end)
 end
@@ -491,6 +524,21 @@ function App:render()
 						end,
 					}),
 
+					ConfirmingPage = createPageElement(AppStatus.Confirming, {
+						confirmData = self.state.confirmData,
+						createPopup = not self.state.guiEnabled,
+
+						onAbort = function()
+							self.confirmationBindable:Fire("Abort")
+						end,
+						onAccept = function()
+							self.confirmationBindable:Fire("Accept")
+						end,
+						onReject = function()
+							self.confirmationBindable:Fire("Reject")
+						end,
+					}),
+
 					Connecting = createPageElement(AppStatus.Connecting),
 
 					Connected = createPageElement(AppStatus.Connected, {
@@ -531,10 +579,10 @@ function App:render()
 						Padding = UDim.new(0, 5),
 					}),
 					padding = e("UIPadding", {
-						PaddingTop = UDim.new(0, 5);
-						PaddingBottom = UDim.new(0, 5);
-						PaddingLeft = UDim.new(0, 5);
-						PaddingRight = UDim.new(0, 5);
+						PaddingTop = UDim.new(0, 5),
+						PaddingBottom = UDim.new(0, 5),
+						PaddingLeft = UDim.new(0, 5),
+						PaddingRight = UDim.new(0, 5),
 					}),
 					notifs = e(Notifications, {
 						soundPlayer = self.props.soundPlayer,
@@ -555,7 +603,9 @@ function App:render()
 				onTriggered = function()
 					if self.serveSession == nil or self.serveSession:getStatus() == ServeSession.Status.NotStarted then
 						self:startSession()
-					elseif self.serveSession ~= nil and self.serveSession:getStatus() == ServeSession.Status.Connected then
+					elseif
+						self.serveSession ~= nil and self.serveSession:getStatus() == ServeSession.Status.Connected
+					then
 						self:endSession()
 					end
 				end,
@@ -603,7 +653,7 @@ function App:render()
 							}
 						end)
 					end,
-				})
+				}),
 			}),
 		}),
 	})
