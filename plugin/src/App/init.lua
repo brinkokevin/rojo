@@ -36,6 +36,7 @@ local StatusPages = require(script.StatusPages)
 local AppStatus = strict("AppStatus", {
 	NotConnected = "NotConnected",
 	Settings = "Settings",
+	Permissions = "Permissions",
 	Connecting = "Connecting",
 	Confirming = "Confirming",
 	Connected = "Connected",
@@ -556,6 +557,35 @@ function App:render()
 							self:setState({
 								appStatus = AppStatus.NotConnected,
 							})
+						end,
+
+						onNavigatePermissions = function()
+							self:setState({
+								appStatus = AppStatus.Permissions,
+							})
+						end,
+					}),
+
+					Permissions = createPageElement(AppStatus.Permissions, {
+						headlessAPI = self.headlessAPI,
+
+						onBack = function()
+							self:setState({
+								appStatus = AppStatus.Settings,
+							})
+						end,
+
+						onEdit = function(source, meta, apiMap)
+							local apiList = {}
+							for api in apiMap do
+								table.insert(apiList, api)
+							end
+							self:requestPermission(
+								source,
+								meta.Name .. if meta.Creator then " by " .. meta.Creator else "",
+								apiList,
+								apiMap
+							)
 						end,
 					}),
 
