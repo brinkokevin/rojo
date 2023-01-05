@@ -25,6 +25,7 @@ local Theme = require(script.Theme)
 local Page = require(script.Page)
 local Notifications = require(script.Notifications)
 local PermissionPopup = require(script.PermissionPopup)
+local ConflictAPIPopup = require(script.ConflictAPIPopup)
 local Tooltip = require(script.Components.Tooltip)
 local StudioPluginAction = require(script.Components.Studio.StudioPluginAction)
 local StudioToolbar = require(script.Components.Studio.StudioToolbar)
@@ -54,11 +55,6 @@ function App:init()
 	self.host, self.setHost = Roact.createBinding(priorHost or "")
 	self.port, self.setPort = Roact.createBinding(priorPort or "")
 
-	self.headlessAPI, self.readOnlyHeadlessAPI = HeadlessAPI.new(self)
-
-	-- selene: allow(global_usage)
-	_G.Rojo = self.readOnlyHeadlessAPI -- Expose headless to other plugins and command bar
-
 	self.patchInfo, self.setPatchInfo = Roact.createBinding({
 		changes = 0,
 		timestamp = os.time(),
@@ -72,8 +68,52 @@ function App:init()
 		confirmData = {},
 		notifications = {},
 		toolbarIcon = Assets.Images.PluginButton,
-		permissionPopups = {},
+		popups = {},
 	})
+
+	self.headlessAPI, self.readOnlyHeadlessAPI = HeadlessAPI.new(self)
+
+	-- selene: allow(global_usage)
+	local existingAPI = _G.Rojo
+	if existingAPI then
+		local responseEvent = Instance.new("BindableEvent")
+		responseEvent.Event:Once(function(accepted)
+			if accepted then
+				-- selene: allow(global_usage)
+				_G.Rojo = self.readOnlyHeadlessAPI -- Expose headless to other plugins and command bar
+			end
+
+			responseEvent:Destroy()
+			self:setState(function(state)
+				state.popups["apiReplacement"] = nil
+				return state
+			end)
+		end)
+
+		self:setState(function(state)
+			state.popups["apiReplacement"] = {
+				name = "Headless API Conflict",
+				dockState = Enum.InitialDockState.Float,
+				onClose = function()
+					responseEvent:Fire(false)
+				end,
+				content = e(ConflictAPIPopup, {
+					existingAPI = existingAPI,
+					onAccept = function()
+						responseEvent:Fire(true)
+					end,
+					onDeny = function()
+						responseEvent:Fire(false)
+					end,
+					transparency = Roact.createBinding(0),
+				}),
+			}
+			return state
+		end)
+	else
+		-- selene: allow(global_usage)
+		_G.Rojo = self.readOnlyHeadlessAPI -- Expose headless to other plugins and command bar
+	end
 end
 
 function App:addNotification(text: string, timeout: number?)
@@ -217,11 +257,8 @@ function App:requestPermission(source: string, name: string, apis: {string}, ini
 	local responseEvent = Instance.new("BindableEvent")
 
 	self:setState(function(state)
-		state.permissionPopups[source] = {
-			responseEvent = responseEvent,
-			initialState = initialState,
+		state.popups[source  .. " Permissions"] = {
 			name = name,
-			apis = apis,
 			content = e(PermissionPopup, {
 				responseEvent = responseEvent,
 				initialState = initialState,
@@ -231,6 +268,9 @@ function App:requestPermission(source: string, name: string, apis: {string}, ini
 				apiDescriptions = self.headlessAPI._apiDescriptions,
 				transparency = Roact.createBinding(0),
 			}),
+			onClose = function()
+				responseEvent:Fire(initialState)
+			end,
 		}
 		return state
 	end)
@@ -239,7 +279,7 @@ function App:requestPermission(source: string, name: string, apis: {string}, ini
 	responseEvent:Destroy()
 
 	self:setState(function(state)
-		state.permissionPopups[source] = nil
+		state.popups[source  .. " Permissions"] = nil
 		return state
 	end)
 
@@ -436,14 +476,14 @@ function App:render()
 		return e(Page, props)
 	end
 
-	local permissionPopups = {}
-	for id, popup in self.state.permissionPopups do
-		permissionPopups["Rojo_"..id] = e(StudioPluginGui, {
+	local popups = {}
+	for id, popup in self.state.popups do
+		popups["Rojo_"..id] = e(StudioPluginGui, {
 			id = id,
-			title = popup.name .. " Permissions",
+			title = popup.name,
 			active = true,
 
-			initDockState = Enum.InitialDockState.Top,
+			initDockState = popup.dockState or Enum.InitialDockState.Top,
 			initEnabled = true,
 			overridePreviousState = true,
 			floatingSize = Vector2.new(400, 300),
@@ -451,15 +491,7 @@ function App:render()
 
 			zIndexBehavior = Enum.ZIndexBehavior.Sibling,
 
-			onClose = function()
-				popup.responseEvent:Fire(popup.initialState)
-				popup.responseEvent:Destroy()
-
-				self:setState(function(state)
-					state[id] = nil
-					return state
-				end)
-			end,
+			onClose = popup.onClose,
 		}, {
 			Content = popup.content,
 
@@ -479,7 +511,7 @@ function App:render()
 	}, {
 		e(Theme.StudioProvider, nil, {
 			e(Tooltip.Provider, nil, {
-				permissionPopups = Roact.createFragment(permissionPopups),
+				popups = Roact.createFragment(popups),
 
 				gui = e(StudioPluginGui, {
 					id = pluginName,
