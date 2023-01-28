@@ -6,13 +6,9 @@ local Packages = Rojo.Packages
 
 local Roact = require(Packages.Roact)
 
-local Settings = require(Plugin.Settings)
-local Assets = require(Plugin.Assets)
 local Theme = require(Plugin.App.Theme)
 
 local Checkbox = require(Plugin.App.Components.Checkbox)
-local Dropdown = require(Plugin.App.Components.Dropdown)
-local IconButton = require(Plugin.App.Components.IconButton)
 
 local e = Roact.createElement
 
@@ -27,31 +23,14 @@ local function getTextBounds(text, textSize, font, lineHeight, bounds)
 	return Vector2.new(textBounds.X, lineHeightAbsolute * lineCount - (lineHeightAbsolute - textSize))
 end
 
-local Setting = Roact.Component:extend("Setting")
+local Toggle = Roact.Component:extend("Toggle")
 
-function Setting:init()
+function Toggle:init()
 	self.contentSize, self.setContentSize = Roact.createBinding(Vector2.new(0, 0))
 	self.containerSize, self.setContainerSize = Roact.createBinding(Vector2.new(0, 0))
-
-	if self.props.id then
-		self:setState({
-			setting = Settings:get(self.props.id),
-		})
-		self.changedCleanup = Settings:onChanged(self.props.id, function(value)
-			self:setState({
-				setting = value,
-			})
-		end)
-	end
 end
 
-function Setting:willUnmount()
-	if self.changedCleanup then
-		self.changedCleanup()
-	end
-end
-
-function Setting:render()
+function Toggle:render()
 	return Theme.with(function(theme)
 		theme = theme.Settings
 
@@ -67,43 +46,13 @@ function Setting:render()
 				self.setContainerSize(object.AbsoluteSize)
 			end,
 		}, {
-			Input = if self.props.customInput then
-				self.props.customInput
-			elseif self.props.options ~= nil then
-				e(Dropdown, {
-					options = self.props.options,
-					active = self.state.setting,
-					transparency = self.props.transparency,
-					position = UDim2.new(1, 0, 0.5, 0),
-					anchorPoint = Vector2.new(1, 0.5),
-					onClick = function(option)
-						Settings:set(self.props.id, option)
-					end,
-				})
-			else
-				e(Checkbox, {
-					active = self.state.setting,
-					transparency = self.props.transparency,
-					position = UDim2.new(1, 0, 0.5, 0),
-					anchorPoint = Vector2.new(1, 0.5),
-					onClick = function()
-						local currentValue = Settings:get(self.props.id)
-						Settings:set(self.props.id, not currentValue)
-					end,
-				}),
-
-			Reset = if self.props.onReset then e(IconButton, {
-				icon = Assets.Images.Icons.Reset,
-				iconSize = 24,
-				color = theme.BackButtonColor,
+			Input = e(Checkbox, {
+				active = self.props.active,
 				transparency = self.props.transparency,
-				visible = self.props.showReset,
-
-				position = UDim2.new(1, -32 - (self.props.options ~= nil and 120 or 40), 0.5, 0),
-				anchorPoint = Vector2.new(0, 0.5),
-
-				onClick = self.props.onReset,
-			}) else nil,
+				position = UDim2.new(1, 0, 0.5, 0),
+				anchorPoint = Vector2.new(1, 0.5),
+				onClick = self.props.onClick,
+			}),
 
 			Text = e("Frame", {
 				Size = UDim2.new(1, 0, 1, 0),
@@ -134,7 +83,7 @@ function Setting:render()
 					TextWrapped = true,
 
 					Size = self.containerSize:map(function(value)
-						local offset = (self.props.onReset and 34 or 0) + (self.props.options ~= nil and 120 or 40)
+						local offset = self.props.options ~= nil and 120 or 40
 						local textBounds = getTextBounds(
 							self.props.description, 14, Enum.Font.Gotham, 1.2,
 							Vector2.new(value.X - offset, math.huge)
@@ -182,4 +131,4 @@ function Setting:render()
 	end)
 end
 
-return Setting
+return Toggle

@@ -17,13 +17,21 @@ local Assets = {
 	},
 	Images = {
 		Logo = "rbxassetid://5990772764",
-		PluginButton = "rbxassetid://3405341609",
+		PluginButton = "rbxassetid://11092987711",
 		PluginButtonConnected = "rbxassetid://9529783993",
 		PluginButtonWarning = "rbxassetid://9529784530",
+		ThirdPartyPlugin = "rbxassetid://11064843298",
 		Icons = {
 			Close = "rbxassetid://6012985953",
 			Back = "rbxassetid://6017213752",
 			Reset = "rbxassetid://10142422327",
+			Expand = "rbxassetid://12045401097",
+			Settings = "rbxassetid://12046309515",
+		},
+		Diff = {
+			Add = "rbxassetid://10434145835",
+			Remove = "rbxassetid://10434408368",
+			Edit = "rbxassetid://10434144680",
 		},
 		Checkbox = {
 			Active = "rbxassetid://6016251644",

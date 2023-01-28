@@ -16,12 +16,16 @@ local strict = require(Plugin.strict)
 local Dictionary = require(Plugin.Dictionary)
 local ServeSession = require(Plugin.ServeSession)
 local ApiContext = require(Plugin.ApiContext)
+local HeadlessAPI = require(Plugin.HeadlessAPI)
+local PatchSet = require(Plugin.PatchSet)
 local preloadAssets = require(Plugin.preloadAssets)
 local soundPlayer = require(Plugin.soundPlayer)
 local Theme = require(script.Theme)
 
 local Page = require(script.Page)
 local Notifications = require(script.Notifications)
+local PermissionPopup = require(script.PermissionPopup)
+local ConflictAPIPopup = require(script.ConflictAPIPopup)
 local Tooltip = require(script.Components.Tooltip)
 local StudioPluginAction = require(script.Components.Studio.StudioPluginAction)
 local StudioToolbar = require(script.Components.Studio.StudioToolbar)
@@ -33,7 +37,9 @@ local StatusPages = require(script.StatusPages)
 local AppStatus = strict("AppStatus", {
 	NotConnected = "NotConnected",
 	Settings = "Settings",
+	Permissions = "Permissions",
 	Connecting = "Connecting",
+	Confirming = "Confirming",
 	Connected = "Connected",
 	Error = "Error",
 })
@@ -50,16 +56,64 @@ function App:init()
 	self.port, self.setPort = Roact.createBinding(priorPort or "")
 
 	self.patchInfo, self.setPatchInfo = Roact.createBinding({
-		changes = 0,
+		patch = PatchSet.newEmpty(),
 		timestamp = os.time(),
 	})
+	self.confirmationBindable = Instance.new("BindableEvent")
+	self.confirmationEvent = self.confirmationBindable.Event
 
 	self:setState({
 		appStatus = AppStatus.NotConnected,
 		guiEnabled = false,
+		confirmData = {},
 		notifications = {},
 		toolbarIcon = Assets.Images.PluginButton,
+		popups = {},
 	})
+
+	self.headlessAPI, self.readOnlyHeadlessAPI = HeadlessAPI.new(self)
+
+	-- selene: allow(global_usage)
+	local existingAPI = _G.Rojo
+	if existingAPI then
+		local responseEvent = Instance.new("BindableEvent")
+		responseEvent.Event:Once(function(accepted)
+			if accepted then
+				-- selene: allow(global_usage)
+				_G.Rojo = self.readOnlyHeadlessAPI -- Expose headless to other plugins and command bar
+			end
+
+			responseEvent:Destroy()
+			self:setState(function(state)
+				state.popups["apiReplacement"] = nil
+				return state
+			end)
+		end)
+
+		self:setState(function(state)
+			state.popups["apiReplacement"] = {
+				name = "Headless API Conflict",
+				dockState = Enum.InitialDockState.Float,
+				onClose = function()
+					responseEvent:Fire(false)
+				end,
+				content = e(ConflictAPIPopup, {
+					existingAPI = existingAPI,
+					onAccept = function()
+						responseEvent:Fire(true)
+					end,
+					onDeny = function()
+						responseEvent:Fire(false)
+					end,
+					transparency = Roact.createBinding(0),
+				}),
+			}
+			return state
+		end)
+	else
+		-- selene: allow(global_usage)
+		_G.Rojo = self.readOnlyHeadlessAPI -- Expose headless to other plugins and command bar
+	end
 end
 
 function App:addNotification(text: string, timeout: number?)
@@ -72,6 +126,25 @@ function App:addNotification(text: string, timeout: number?)
 		text = text,
 		timestamp = DateTime.now().UnixTimestampMillis,
 		timeout = timeout or 3,
+	})
+
+	self:setState({
+		notifications = notifications,
+	})
+end
+
+function App:addThirdPartyNotification(source: string, text: string, timeout: number?)
+	if not Settings:get("showNotifications") then
+		return
+	end
+
+	local notifications = table.clone(self.state.notifications)
+	table.insert(notifications, {
+		text = text,
+		timestamp = DateTime.now().UnixTimestampMillis,
+		timeout = timeout or 3,
+		thirdParty = true,
+		source = source,
 	})
 
 	self:setState({
@@ -127,7 +200,7 @@ function App:setPriorEndpoint(host: string, port: string)
 	Settings:set("priorEndpoints", priorEndpoints)
 end
 
-function App:getHostAndPort()
+function App:getHostAndPort(): (string, string)
 	local host = self.host:getValue()
 	local port = self.port:getValue()
 
@@ -180,7 +253,40 @@ function App:releaseSyncLock()
 	Log.trace("Could not relase sync lock because it is owned by {}", lock.Value)
 end
 
-function App:startSession()
+function App:requestPermission(source: string, name: string, apis: {string}, initialState: {[string]: boolean?}): {[string]: boolean}
+	local responseEvent = Instance.new("BindableEvent")
+
+	self:setState(function(state)
+		state.popups[source  .. " Permissions"] = {
+			name = name,
+			content = e(PermissionPopup, {
+				responseEvent = responseEvent,
+				initialState = initialState,
+				source = source,
+				name = name,
+				apis = apis,
+				apiDescriptions = self.headlessAPI._apiDescriptions,
+				transparency = Roact.createBinding(0),
+			}),
+			onClose = function()
+				responseEvent:Fire(initialState)
+			end,
+		}
+		return state
+	end)
+
+	local response = responseEvent.Event:Wait()
+	responseEvent:Destroy()
+
+	self:setState(function(state)
+		state.popups[source  .. " Permissions"] = nil
+		return state
+	end)
+
+	return response
+end
+
+function App:startSession(host: string?, port: string?)
 	local claimedLock, priorOwner = self:claimSyncLock()
 	if not claimedLock then
 		local msg = string.format("Could not sync because user '%s' is already syncing", tostring(priorOwner))
@@ -196,7 +302,9 @@ function App:startSession()
 		return
 	end
 
-	local host, port = self:getHostAndPort()
+	if host == nil or port == nil then
+		host, port = self:getHostAndPort()
+	end
 
 	local sessionOptions = {
 		openScriptsExternally = Settings:get("openScriptsExternally"),
@@ -214,32 +322,31 @@ function App:startSession()
 		twoWaySync = sessionOptions.twoWaySync,
 	})
 
-	serveSession:onPatchApplied(function(patch, unapplied)
+	serveSession:onPatchApplied(function(patch, _unapplied)
+		if PatchSet.isEmpty(patch) then
+			-- Ignore empty patches
+			return
+		end
+
 		local now = os.time()
-		local changes = 0
-
-		for _, set in patch do
-			for _ in set do
-				changes += 1
-			end
-		end
-		for _, set in unapplied do
-			for _ in set do
-				changes -= 1
-			end
-		end
-
-		if changes == 0 then return end
 
 		local old = self.patchInfo:getValue()
 		if now - old.timestamp < 2 then
-			changes += old.changes
-		end
+			-- Patches that apply in the same second are
+			-- considered to be part of the same change for human clarity
+			local merged = PatchSet.newEmpty()
+			PatchSet.assign(merged, old.patch, patch)
 
-		self.setPatchInfo({
-			changes = changes,
-			timestamp = now,
-		})
+			self.setPatchInfo({
+				patch = merged,
+				timestamp = now,
+			})
+		else
+			self.setPatchInfo({
+				patch = patch,
+				timestamp = now,
+			})
+		end
 	end)
 
 	serveSession:onStatusChanged(function(status, details)
@@ -252,7 +359,11 @@ function App:startSession()
 			})
 			self:addNotification("Connecting to session...")
 		elseif status == ServeSession.Status.Connected then
-			local address = ("%s:%s"):format(host, port)
+			local address = string.format("%s:%s", host :: string, port :: string)
+
+			self.headlessAPI:_updateProperty("Address", address)
+			self.headlessAPI:_updateProperty("ProjectName", details)
+
 			self:setState({
 				appStatus = AppStatus.Connected,
 				projectName = details,
@@ -283,6 +394,38 @@ function App:startSession()
 				self:addNotification("Disconnected from session.")
 			end
 		end
+
+		self.headlessAPI:_updateProperty("Connected", status == ServeSession.Status.Connected)
+		if not self.headlessAPI.Connected then
+			self.headlessAPI:_updateProperty("Address", nil)
+			self.headlessAPI:_updateProperty("ProjectName", nil)
+		end
+	end)
+
+	serveSession:setConfirmCallback(function(instanceMap, patch, serverInfo)
+		if PatchSet.isEmpty(patch) then
+			return "Accept"
+		end
+
+		self:setState({
+			appStatus = AppStatus.Confirming,
+			confirmData = {
+				instanceMap = instanceMap,
+				patch = patch,
+				serverInfo = serverInfo,
+			},
+			toolbarIcon = Assets.Images.PluginButton,
+		})
+
+		self:addNotification(
+			string.format(
+				"Please accept%sor abort the initializing sync session.",
+				Settings:get("twoWaySync") and ", reject, " or " "
+			),
+			7
+		)
+
+		return self.confirmationEvent:Wait()
 	end)
 
 	serveSession:start()
@@ -295,7 +438,7 @@ function App:startSession()
 			local patchInfo = table.clone(self.patchInfo:getValue())
 			self.setPatchInfo(patchInfo)
 			local elapsed = os.time() - patchInfo.timestamp
-			task.wait(elapsed < 60 and 1 or elapsed/5)
+			task.wait(elapsed < 60 and 1 or elapsed / 5)
 		end
 	end)
 end
@@ -317,7 +460,7 @@ function App:endSession()
 end
 
 function App:render()
-	local pluginName = "Rojo " .. Version.display(Config.version)
+	local pluginName = "Rojo Boatly " .. Version.display(Config.version)
 
 	local function createPageElement(appStatus, additionalProps)
 		additionalProps = additionalProps or {}
@@ -330,11 +473,43 @@ function App:render()
 		return e(Page, props)
 	end
 
+	local popups = {}
+	for id, popup in self.state.popups do
+		popups["Rojo_"..id] = e(StudioPluginGui, {
+			id = id,
+			title = popup.name,
+			active = true,
+
+			initDockState = popup.dockState or Enum.InitialDockState.Top,
+			initEnabled = true,
+			overridePreviousState = true,
+			floatingSize = Vector2.new(400, 300),
+			minimumSize = Vector2.new(390, 240),
+
+			zIndexBehavior = Enum.ZIndexBehavior.Sibling,
+
+			onClose = popup.onClose,
+		}, {
+			Content = popup.content,
+
+			Background = Theme.with(function(theme)
+				return e("Frame", {
+					Size = UDim2.new(1, 0, 1, 0),
+					BackgroundColor3 = theme.BackgroundColor,
+					ZIndex = 0,
+					BorderSizePixel = 0,
+				})
+			end),
+		})
+	end
+
 	return e(StudioPluginContext.Provider, {
 		value = self.props.plugin,
 	}, {
 		e(Theme.StudioProvider, nil, {
 			e(Tooltip.Provider, nil, {
+				popups = Roact.createFragment(popups),
+
 				gui = e(StudioPluginGui, {
 					id = pluginName,
 					title = pluginName,
@@ -379,12 +554,28 @@ function App:render()
 						end,
 					}),
 
+					ConfirmingPage = createPageElement(AppStatus.Confirming, {
+						confirmData = self.state.confirmData,
+						createPopup = not self.state.guiEnabled,
+
+						onAbort = function()
+							self.confirmationBindable:Fire("Abort")
+						end,
+						onAccept = function()
+							self.confirmationBindable:Fire("Accept")
+						end,
+						onReject = function()
+							self.confirmationBindable:Fire("Reject")
+						end,
+					}),
+
 					Connecting = createPageElement(AppStatus.Connecting),
 
 					Connected = createPageElement(AppStatus.Connected, {
 						projectName = self.state.projectName,
 						address = self.state.address,
 						patchInfo = self.patchInfo,
+						serveSession = self.serveSession,
 
 						onDisconnect = function()
 							self:endSession()
@@ -396,6 +587,35 @@ function App:render()
 							self:setState({
 								appStatus = AppStatus.NotConnected,
 							})
+						end,
+
+						onNavigatePermissions = function()
+							self:setState({
+								appStatus = AppStatus.Permissions,
+							})
+						end,
+					}),
+
+					Permissions = createPageElement(AppStatus.Permissions, {
+						headlessAPI = self.headlessAPI,
+
+						onBack = function()
+							self:setState({
+								appStatus = AppStatus.Settings,
+							})
+						end,
+
+						onEdit = function(source, meta, apiMap)
+							local apiList = {}
+							for api in apiMap do
+								table.insert(apiList, api)
+							end
+							self:requestPermission(
+								source,
+								meta.Name .. if meta.Creator then " by " .. meta.Creator else "",
+								apiList,
+								apiMap
+							)
 						end,
 					}),
 
@@ -409,15 +629,6 @@ function App:render()
 							})
 						end,
 					}),
-
-					Background = Theme.with(function(theme)
-						return e("Frame", {
-							Size = UDim2.new(1, 0, 1, 0),
-							BackgroundColor3 = theme.BackgroundColor,
-							ZIndex = 0,
-							BorderSizePixel = 0,
-						})
-					end),
 				}),
 
 				RojoNotifications = e("ScreenGui", {}, {
@@ -428,10 +639,10 @@ function App:render()
 						Padding = UDim.new(0, 5),
 					}),
 					padding = e("UIPadding", {
-						PaddingTop = UDim.new(0, 5);
-						PaddingBottom = UDim.new(0, 5);
-						PaddingLeft = UDim.new(0, 5);
-						PaddingRight = UDim.new(0, 5);
+						PaddingTop = UDim.new(0, 5),
+						PaddingBottom = UDim.new(0, 5),
+						PaddingLeft = UDim.new(0, 5),
+						PaddingRight = UDim.new(0, 5),
 					}),
 					notifs = e(Notifications, {
 						soundPlayer = self.props.soundPlayer,
@@ -452,7 +663,9 @@ function App:render()
 				onTriggered = function()
 					if self.serveSession == nil or self.serveSession:getStatus() == ServeSession.Status.NotStarted then
 						self:startSession()
-					elseif self.serveSession ~= nil and self.serveSession:getStatus() == ServeSession.Status.Connected then
+					elseif
+						self.serveSession ~= nil and self.serveSession:getStatus() == ServeSession.Status.Connected
+					then
 						self:endSession()
 					end
 				end,
@@ -488,7 +701,7 @@ function App:render()
 				name = pluginName,
 			}, {
 				button = e(StudioToggleButton, {
-					name = "Rojo",
+					name = "Rojo Boatly",
 					tooltip = "Show or hide the Rojo panel",
 					icon = self.state.toolbarIcon,
 					active = self.state.guiEnabled,
@@ -500,7 +713,7 @@ function App:render()
 							}
 						end)
 					end,
-				})
+				}),
 			}),
 		}),
 	})
